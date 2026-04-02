@@ -14,6 +14,8 @@ export const analysisRunStatusSchema = z.enum([
   "failed",
 ]);
 
+export const analysisModeSchema = z.enum(["pm_report", "analyze"]);
+
 export const artifactKindSchema = z.enum([
   "source_video",
   "boosted_audio",
@@ -153,6 +155,8 @@ export const analysisRunSchema = z.object({
   id: z.string(),
   videoId: z.string(),
   status: analysisRunStatusSchema,
+  mode: analysisModeSchema,
+  prompt: z.string().nullable(),
   stage: z.string(),
   error: z.string().nullable(),
   configVersion: z.string(),
@@ -197,6 +201,7 @@ export const videoDetailSchema = videoSchema.extend({
 
 export type VideoStatus = z.infer<typeof videoStatusSchema>;
 export type AnalysisRunStatus = z.infer<typeof analysisRunStatusSchema>;
+export type AnalysisMode = z.infer<typeof analysisModeSchema>;
 export type ArtifactKind = z.infer<typeof artifactKindSchema>;
 export type StorageBackend = z.infer<typeof storageBackendSchema>;
 export type MomentCategory = z.infer<typeof momentCategorySchema>;

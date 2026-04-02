@@ -42,6 +42,10 @@ export async function understandScreenshot(params: {
   filePath: string;
   mimeType: string;
   timestampSec: number;
+  focusPrompt?: string;
+  contextLabel?: string;
+  transcriptExcerpt?: string[];
+  rationale?: string;
 }) {
   const result = await generateJsonFromUploadedFile<
     Omit<ScreenshotInsight, "timestampSec">
@@ -53,7 +57,19 @@ export async function understandScreenshot(params: {
     systemPrompt: SYSTEM_PROMPT,
     userPrompt: `Analyze this screenshot captured at ${params.timestampSec.toFixed(
       1,
-    )} seconds and describe the visible application state.`,
+    )} seconds and describe the visible application state.
+${params.contextLabel ? `\nContext label: ${params.contextLabel}` : ""}
+${params.rationale ? `\nWhy this frame was selected: ${params.rationale}` : ""}
+${
+  params.transcriptExcerpt && params.transcriptExcerpt.length > 0
+    ? `\nNearby transcript:\n${params.transcriptExcerpt.join("\n")}`
+    : ""
+}
+${
+  params.focusPrompt
+    ? `\nFocus especially on this user request:\n${params.focusPrompt}`
+    : ""
+}`,
   });
 
   return screenshotInsightSchema.parse({

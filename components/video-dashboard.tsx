@@ -1,6 +1,7 @@
 "use client";
 
 import type { VideoListItem } from "@/lib/types";
+import { getVideoSourceKind } from "@/lib/video-source";
 import { upload } from "@vercel/blob/client";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
@@ -25,7 +26,9 @@ export function VideoDashboard({
 }: Props) {
   const router = useRouter();
   const [videos, setVideos] = useState(initialVideos);
+  const [sourceMode, setSourceMode] = useState<"upload" | "youtube">("upload");
   const [file, setFile] = useState<File | null>(null);
+  const [youtubeUrl, setYouTubeUrl] = useState("");
   const [title, setTitle] = useState("");
   const [useBlob, setUseBlob] = useState(blobUploadAvailable);
   const [saving, setSaving] = useState(false);
@@ -45,46 +48,59 @@ export function VideoDashboard({
   }
 
   async function handleCreate() {
-    if (!file) return;
-
     setSaving(true);
     setError(null);
 
     try {
       let response: Response;
 
-      if (blobUploadAvailable && useBlob) {
-        const blob = await upload(file.name, file, {
-          access: "public",
-          handleUploadUrl: "/api/blob",
-          multipart: file.size > 45 * 1024 * 1024,
-        });
-
+      if (sourceMode === "youtube") {
         response = await fetch("/api/videos", {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
           },
           body: JSON.stringify({
-            title: title || file.name.replace(/\.[^.]+$/, ""),
-            blobUrl: blob.url,
-            storageKey: blob.pathname,
-            mimeType: blob.contentType || file.type || "video/mp4",
-            sizeBytes: file.size,
-            originalFilename: file.name,
+            title: title || undefined,
+            youtubeUrl: youtubeUrl.trim(),
           }),
         });
       } else {
-        const formData = new FormData();
-        formData.append("file", file);
-        if (title.trim()) {
-          formData.append("title", title.trim());
-        }
+        if (!file) return;
 
-        response = await fetch("/api/videos", {
-          method: "POST",
-          body: formData,
-        });
+        if (blobUploadAvailable && useBlob) {
+          const blob = await upload(file.name, file, {
+            access: "public",
+            handleUploadUrl: "/api/blob",
+            multipart: file.size > 45 * 1024 * 1024,
+          });
+
+          response = await fetch("/api/videos", {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+              title: title || file.name.replace(/\.[^.]+$/, ""),
+              blobUrl: blob.url,
+              storageKey: blob.pathname,
+              mimeType: blob.contentType || file.type || "video/mp4",
+              sizeBytes: file.size,
+              originalFilename: file.name,
+            }),
+          });
+        } else {
+          const formData = new FormData();
+          formData.append("file", file);
+          if (title.trim()) {
+            formData.append("title", title.trim());
+          }
+
+          response = await fetch("/api/videos", {
+            method: "POST",
+            body: formData,
+          });
+        }
       }
 
       const data = (await response.json()) as {
@@ -97,6 +113,7 @@ export function VideoDashboard({
       }
 
       setFile(null);
+      setYouTubeUrl("");
       setTitle("");
       await refreshVideos();
       if (data.video?.id) {
@@ -190,18 +207,57 @@ export function VideoDashboard({
 
       <section className="rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-5">
         <h2 className="text-lg font-medium">Create video</h2>
+        <div className="mt-4 flex flex-wrap gap-2">
+          <button
+            type="button"
+            onClick={() => setSourceMode("upload")}
+            className={`rounded-full border px-3 py-1 text-sm ${
+              sourceMode === "upload"
+                ? "border-[var(--accent)] text-[var(--accent)]"
+                : "border-[var(--border)] text-[var(--muted)]"
+            }`}
+          >
+            Upload file
+          </button>
+          <button
+            type="button"
+            onClick={() => setSourceMode("youtube")}
+            className={`rounded-full border px-3 py-1 text-sm ${
+              sourceMode === "youtube"
+                ? "border-[var(--accent)] text-[var(--accent)]"
+                : "border-[var(--border)] text-[var(--muted)]"
+            }`}
+          >
+            YouTube URL
+          </button>
+        </div>
         <div className="mt-4 grid gap-4 lg:grid-cols-[1.2fr_1fr_auto]">
-          <label className="flex cursor-pointer items-center justify-center rounded-xl border border-dashed border-[var(--border)] bg-[var(--bg)] px-4 py-8 text-center text-sm text-[var(--muted)] hover:border-[var(--accent)]">
-            <input
-              type="file"
-              className="hidden"
-              accept="video/*"
-              onChange={(event) => setFile(event.target.files?.[0] ?? null)}
-            />
-            {file
-              ? `${file.name} (${formatBytes(file.size)})`
-              : "Choose a walkthrough video"}
-          </label>
+          {sourceMode === "upload" ? (
+            <label className="flex cursor-pointer items-center justify-center rounded-xl border border-dashed border-[var(--border)] bg-[var(--bg)] px-4 py-8 text-center text-sm text-[var(--muted)] hover:border-[var(--accent)]">
+              <input
+                type="file"
+                className="hidden"
+                accept="video/*"
+                onChange={(event) => setFile(event.target.files?.[0] ?? null)}
+              />
+              {file
+                ? `${file.name} (${formatBytes(file.size)})`
+                : "Choose a walkthrough video"}
+            </label>
+          ) : (
+            <label className="flex flex-col gap-2 text-sm">
+              <span className="text-[var(--muted)]">YouTube URL</span>
+              <input
+                value={youtubeUrl}
+                onChange={(event) => setYouTubeUrl(event.target.value)}
+                placeholder="https://www.youtube.com/watch?v=..."
+                className="rounded-xl border border-[var(--border)] bg-[var(--bg)] px-3 py-2 outline-none ring-0 focus:border-[var(--accent)]"
+              />
+              <span className="text-xs text-[var(--muted)]">
+                Public YouTube videos can be analyzed directly by Gemini.
+              </span>
+            </label>
+          )}
           <label className="flex flex-col gap-2 text-sm">
             <span className="text-[var(--muted)]">Title</span>
             <input
@@ -210,7 +266,7 @@ export function VideoDashboard({
               placeholder="Optional display title"
               className="rounded-xl border border-[var(--border)] bg-[var(--bg)] px-3 py-2 outline-none ring-0 focus:border-[var(--accent)]"
             />
-            {blobUploadAvailable ? (
+            {blobUploadAvailable && sourceMode === "upload" ? (
               <label className="mt-2 flex items-center gap-2 text-xs text-[var(--muted)]">
                 <input
                   type="checkbox"
@@ -223,7 +279,11 @@ export function VideoDashboard({
           </label>
           <button
             type="button"
-            disabled={!databaseReady || !file || saving}
+            disabled={
+              !databaseReady ||
+              saving ||
+              (sourceMode === "upload" ? !file : youtubeUrl.trim().length === 0)
+            }
             onClick={() => void handleCreate()}
             className="rounded-xl bg-[var(--accent)] px-4 py-3 text-sm font-medium text-[var(--bg)] disabled:opacity-40"
           >
@@ -251,8 +311,8 @@ export function VideoDashboard({
 
         {videos.length === 0 ? (
           <p className="mt-4 text-sm text-[var(--muted)]">
-            No videos yet. Upload a narrated screen recording to create the first
-            workspace entry.
+            No videos yet. Upload a narrated screen recording or paste a YouTube
+            walkthrough link to create the first workspace entry.
           </p>
         ) : (
           <div className="mt-4 grid gap-4">
@@ -275,12 +335,15 @@ export function VideoDashboard({
                       </span>
                       {video.latestRun ? (
                         <span className="rounded-full border border-[var(--border)] px-2 py-0.5 text-xs uppercase tracking-wide text-[var(--muted)]">
-                          latest run: {video.latestRun.status}
+                          latest run: {video.latestRun.status} · {video.latestRun.mode}
                         </span>
                       ) : null}
                     </div>
                     <p className="text-sm text-[var(--muted)]">
-                      {formatBytes(video.sourceArtifact.sizeBytes)} · created{" "}
+                      {getVideoSourceKind(video.sourceArtifact) === "youtube"
+                        ? "YouTube link"
+                        : formatBytes(video.sourceArtifact.sizeBytes)}{" "}
+                      · created{" "}
                       {new Date(video.createdAt).toLocaleString()}
                     </p>
                     <div className="flex flex-wrap gap-2 text-xs text-[var(--muted)]">
@@ -292,6 +355,9 @@ export function VideoDashboard({
                     {video.latestRun?.error ? (
                       <p className="text-sm text-red-300">{video.latestRun.error}</p>
                     ) : null}
+                    <p className="text-xs text-[var(--muted)]">
+                      Open the video detail page to run prompt-driven Analyze mode.
+                    </p>
                   </div>
 
                   <div className="flex flex-wrap gap-2">

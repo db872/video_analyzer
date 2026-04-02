@@ -1,11 +1,11 @@
 import { Type } from "@google/genai";
+import type { ClipFinding } from "@/lib/analysis/clip-understanding";
 import { normalizeConfidence } from "@/lib/analysis/normalize-confidence";
 import {
   memoryEntitySchema,
   memoryRelationshipSchema,
   type MemoryEntity,
   type MemoryRelationship,
-  type ScreenshotInsight,
   type TranscriptSegment,
 } from "@/lib/types";
 import { generateJsonFromText } from "@/lib/analysis/gemini-client";
@@ -73,7 +73,7 @@ const responseSchema = {
 };
 
 const SYSTEM_PROMPT = `You build a reusable memory model for product walkthrough videos.
-Use transcript cues and screenshot descriptions to infer stable UI and business-domain objects.
+Use transcript cues and targeted clip findings to infer stable UI and business-domain objects.
 Return strict JSON only.
 Entity names should be stable, deduplicated labels.
 Entity types can include page, view, workflow, object, record, table, filter, form, action, report, or status.
@@ -89,22 +89,23 @@ function compactTranscript(transcript: TranscriptSegment[]) {
     .join("\n");
 }
 
-function compactScreenshots(screenshots: ScreenshotInsight[]) {
-  return screenshots
-    .map((screenshot) => {
-      const objects = screenshot.objects
-        .map((obj) => `${obj.kind}:${obj.label}`)
-        .join(", ");
-      return `[${screenshot.timestampSec.toFixed(1)}] ${screenshot.caption}${
-        screenshot.pageLabel ? ` | page=${screenshot.pageLabel}` : ""
-      }${objects ? ` | objects=${objects}` : ""}`;
+function compactClipFindings(clipFindings: ClipFinding[]) {
+  return clipFindings
+    .map((clip) => {
+      const visibleObjects = clip.visibleObjects.join(", ");
+      const objectHints = clip.objectHints.join(", ");
+      return `[${clip.startSec.toFixed(1)}-${clip.endSec.toFixed(1)}] ${clip.title} | ${
+        clip.summary
+      }${visibleObjects ? ` | visible=${visibleObjects}` : ""}${
+        objectHints ? ` | objectHints=${objectHints}` : ""
+      }`;
     })
     .join("\n");
 }
 
 export async function buildObjectModel(params: {
   transcript: TranscriptSegment[];
-  screenshots: ScreenshotInsight[];
+  clipFindings: ClipFinding[];
 }) {
   const result = await generateJsonFromText<{
     entities: MemoryEntity[];
@@ -114,7 +115,7 @@ export async function buildObjectModel(params: {
     systemPrompt: SYSTEM_PROMPT,
     userPrompt: `Transcript:\n${compactTranscript(
       params.transcript,
-    )}\n\nScreenshots:\n${compactScreenshots(params.screenshots)}`,
+    )}\n\nTargeted clip findings:\n${compactClipFindings(params.clipFindings)}`,
   });
 
   return {

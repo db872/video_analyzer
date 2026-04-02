@@ -1,6 +1,7 @@
 import { randomUUID } from "crypto";
 import { neon } from "@neondatabase/serverless";
 import type {
+  AnalysisMode,
   AnalysisResult,
   AnalysisRun,
   BugReport,
@@ -90,6 +91,9 @@ function mapRun(row: Record<string, unknown>, prefix = ""): AnalysisRun | null {
     id: String(row[`${prefix}run_id`]),
     videoId: String(row[`${prefix}run_video_id`]),
     status: String(row[`${prefix}run_status`]) as AnalysisRun["status"],
+    mode: String(row[`${prefix}run_mode`] ?? "pm_report") as AnalysisRun["mode"],
+    prompt:
+      row[`${prefix}run_prompt`] == null ? null : String(row[`${prefix}run_prompt`]),
     stage: String(row[`${prefix}run_stage`] ?? ""),
     error:
       row[`${prefix}run_error`] == null
@@ -130,6 +134,8 @@ export async function ensureSchema() {
           id TEXT PRIMARY KEY,
           video_id TEXT NOT NULL REFERENCES videos(id) ON DELETE CASCADE,
           status TEXT NOT NULL,
+          mode TEXT NOT NULL DEFAULT 'pm_report',
+          prompt TEXT,
           stage TEXT NOT NULL,
           error TEXT,
           config_version TEXT NOT NULL,
@@ -137,6 +143,16 @@ export async function ensureSchema() {
           updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
           completed_at TIMESTAMPTZ
         )
+      `;
+
+      await sql`
+        ALTER TABLE analysis_runs
+        ADD COLUMN IF NOT EXISTS mode TEXT NOT NULL DEFAULT 'pm_report'
+      `;
+
+      await sql`
+        ALTER TABLE analysis_runs
+        ADD COLUMN IF NOT EXISTS prompt TEXT
       `;
 
       await sql`
@@ -170,7 +186,7 @@ export async function ensureSchema() {
         CREATE TABLE IF NOT EXISTS screenshot_frames (
           id TEXT PRIMARY KEY,
           analysis_run_id TEXT NOT NULL REFERENCES analysis_runs(id) ON DELETE CASCADE,
-          artifact_id TEXT NOT NULL REFERENCES artifacts(id) ON DELETE CASCADE,
+          artifact_id TEXT REFERENCES artifacts(id) ON DELETE CASCADE,
           frame_index INTEGER NOT NULL,
           timestamp_sec DOUBLE PRECISION NOT NULL,
           page_label TEXT,
@@ -178,6 +194,11 @@ export async function ensureSchema() {
           raw_notes TEXT,
           objects JSONB NOT NULL DEFAULT '[]'::jsonb
         )
+      `;
+
+      await sql`
+        ALTER TABLE screenshot_frames
+        ALTER COLUMN artifact_id DROP NOT NULL
       `;
 
       await sql`
@@ -427,13 +448,23 @@ export async function deleteVideo(videoId: string) {
 export async function createAnalysisRun(params: {
   videoId: string;
   configVersion: string;
+  mode?: AnalysisMode;
+  prompt?: string | null;
 }) {
   await ensureSchema();
   const sql = getSql();
   const id = randomUUID();
   await sql`
-    INSERT INTO analysis_runs (id, video_id, status, stage, config_version)
-    VALUES (${id}, ${params.videoId}, 'processing', 'queued', ${params.configVersion})
+    INSERT INTO analysis_runs (id, video_id, status, mode, prompt, stage, config_version)
+    VALUES (
+      ${id},
+      ${params.videoId},
+      'processing',
+      ${params.mode ?? "pm_report"},
+      ${params.prompt ?? null},
+      'queued',
+      ${params.configVersion}
+    )
   `;
   return id;
 }
@@ -518,7 +549,7 @@ export async function replaceScreenshotFrames(
       VALUES (
         ${randomUUID()},
         ${runId},
-        ${screenshot.artifactId ?? ""},
+        ${screenshot.artifactId ?? null},
         ${index},
         ${screenshot.timestampSec},
         ${screenshot.pageLabel ?? null},
@@ -718,6 +749,8 @@ export async function listVideos() {
       r.id AS run_id,
       r.video_id AS run_video_id,
       r.status AS run_status,
+      r.mode AS run_mode,
+      r.prompt AS run_prompt,
       r.stage AS run_stage,
       r.error AS run_error,
       r.config_version AS run_config_version,
@@ -784,6 +817,8 @@ export async function getVideoDetail(videoId: string) {
       r.id AS run_id,
       r.video_id AS run_video_id,
       r.status AS run_status,
+      r.mode AS run_mode,
+      r.prompt AS run_prompt,
       r.stage AS run_stage,
       r.error AS run_error,
       r.config_version AS run_config_version,
@@ -841,14 +876,14 @@ export async function getVideoDetail(videoId: string) {
         sf.raw_notes,
         sf.objects
       FROM screenshot_frames sf
-      JOIN artifacts a ON a.id = sf.artifact_id
+      LEFT JOIN artifacts a ON a.id = sf.artifact_id
       WHERE sf.analysis_run_id = ${latestRun.id}
       ORDER BY sf.frame_index ASC
     `);
     screenshots = screenshotRows.map((row) => ({
       id: String(row.id),
-      artifactId: String(row.artifact_id),
-      imageUrl: String(row.public_url),
+      artifactId: row.artifact_id == null ? undefined : String(row.artifact_id),
+      imageUrl: row.public_url == null ? null : String(row.public_url),
       timestampSec: toNumber(row.timestamp_sec),
       pageLabel: row.page_label == null ? null : String(row.page_label),
       caption: String(row.caption),

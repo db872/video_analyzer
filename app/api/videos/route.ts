@@ -2,6 +2,7 @@ import { databaseConfigured } from "@/lib/server/db";
 import {
   createVideoFromBlobReference,
   createVideoFromUpload,
+  createVideoFromYouTubeUrl,
   listVideos,
 } from "@/lib/server/video-service";
 import { NextRequest, NextResponse } from "next/server";
@@ -36,11 +37,21 @@ export async function POST(req: NextRequest) {
       const body = (await req.json()) as {
         title?: string;
         blobUrl?: string;
+        youtubeUrl?: string;
         storageKey?: string;
         mimeType?: string;
         sizeBytes?: number;
         originalFilename?: string;
       };
+
+      if (body.youtubeUrl) {
+        const detail = await createVideoFromYouTubeUrl({
+          youtubeUrl: body.youtubeUrl,
+          title: body.title,
+        });
+
+        return NextResponse.json({ video: detail }, { status: 201 });
+      }
 
       if (
         !body.blobUrl ||

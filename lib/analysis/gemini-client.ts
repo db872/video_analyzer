@@ -30,6 +30,14 @@ export function getGeminiClient() {
   return new GoogleGenAI({ apiKey: getApiKey() });
 }
 
+function parseJsonResponse<T>(text: string) {
+  try {
+    return JSON.parse(text) as T;
+  } catch {
+    throw new Error("Gemini returned invalid JSON");
+  }
+}
+
 export async function uploadAndWait(params: {
   filePath: string;
   mimeType: string;
@@ -168,13 +176,56 @@ export async function generateJsonFromUploadedFile<T>(params: {
         textLength: response.text.length,
       });
 
-      try {
-        return JSON.parse(response.text) as T;
-      } catch {
-        throw new Error("Gemini returned invalid JSON");
-      }
+      return parseJsonResponse<T>(response.text);
     },
   });
+}
+
+export async function generateJsonFromVideoUrl<T>(params: {
+  videoUrl: string;
+  displayName?: string;
+  responseSchema: Record<string, unknown>;
+  systemPrompt: string;
+  userPrompt: string;
+  model?: string;
+}) {
+  const ai = getGeminiClient();
+  console.log("[gemini] url-video generateContent start", {
+    displayName: params.displayName ?? params.videoUrl,
+    model: params.model ?? getGeminiModelName(),
+    videoUrl: params.videoUrl,
+  });
+  const response = await ai.models.generateContent({
+    model: params.model ?? getGeminiModelName(),
+    contents: createUserContent([
+      {
+        fileData: {
+          fileUri: params.videoUrl,
+        },
+      },
+      params.userPrompt,
+    ]),
+    config: {
+      systemInstruction: params.systemPrompt,
+      temperature: 0.2,
+      responseMimeType: "application/json",
+      responseSchema: params.responseSchema as {
+        type: Type;
+      },
+      maxOutputTokens: 65536,
+    },
+  });
+
+  if (!response.text) {
+    throw new Error("Gemini returned an empty response");
+  }
+
+  console.log("[gemini] url-video generateContent complete", {
+    displayName: params.displayName ?? params.videoUrl,
+    textLength: response.text.length,
+  });
+
+  return parseJsonResponse<T>(response.text);
 }
 
 export async function generateJsonFromText<T>(params: {
@@ -210,11 +261,7 @@ export async function generateJsonFromText<T>(params: {
     textLength: response.text.length,
   });
 
-  try {
-    return JSON.parse(response.text) as T;
-  } catch {
-    throw new Error("Gemini returned invalid JSON");
-  }
+  return parseJsonResponse<T>(response.text);
 }
 
 async function safeDelete(ai: GoogleGenAI, name: string | undefined) {

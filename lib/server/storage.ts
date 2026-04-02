@@ -110,6 +110,10 @@ export async function readStoredArtifact(artifact: Pick<
   StoredArtifact,
   "storageBackend" | "storageKey" | "publicUrl"
 >) {
+  if (artifact.storageBackend === "external") {
+    throw new Error("External source artifacts cannot be materialized as local files.");
+  }
+
   if (artifact.storageBackend === "local") {
     return readFile(resolveLocalPath(artifact.storageKey));
   }
@@ -125,6 +129,10 @@ export async function deleteStoredArtifact(artifact: Pick<
   StoredArtifact,
   "storageBackend" | "storageKey" | "publicUrl"
 >) {
+  if (artifact.storageBackend === "external") {
+    return;
+  }
+
   if (artifact.storageBackend === "blob") {
     await del(artifact.publicUrl);
     return;

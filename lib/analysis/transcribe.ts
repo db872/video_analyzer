@@ -1,5 +1,9 @@
 import { Type } from "@google/genai";
-import { getGeminiTranscriptionModelName, generateJsonFromUploadedFile } from "@/lib/analysis/gemini-client";
+import {
+  generateJsonFromUploadedFile,
+  generateJsonFromVideoUrl,
+  getGeminiTranscriptionModelName,
+} from "@/lib/analysis/gemini-client";
 import { splitAudioIntoChunks } from "@/lib/server/ffmpeg";
 import {
   transcriptSegmentSchema,
@@ -182,4 +186,32 @@ export async function transcribeAudioFile(params: {
     totalSegments: transcript.length,
   });
   return transcript.map((segment) => transcriptSegmentSchema.parse(segment));
+}
+
+export async function transcribeVideoUrl(params: { videoUrl: string }) {
+  const result = await generateJsonFromVideoUrl<{
+    summary: string;
+    segments: TranscriptSegment[];
+  }>({
+    videoUrl: params.videoUrl,
+    displayName: "pm-video-analyzer-youtube-transcript",
+    responseSchema,
+    model: getGeminiTranscriptionModelName(),
+    systemPrompt: `You transcribe narrated product walkthrough videos from a public YouTube URL.
+Return strict JSON only.
+Use the video's spoken audio as the primary source and use visuals only to disambiguate obvious product nouns or labels when the speech is unclear.
+Produce accurate timestamped speech segments in seconds relative to the full video.
+Prefer 3-20 second segments. Merge tiny pauses, but do not collapse large topic changes into one segment.
+If something is unclear, use the best-faith transcript and avoid inventing words.`,
+    userPrompt: `Process this public YouTube video and produce a detailed transcription.
+
+Requirements:
+1. Return a brief summary of the full video.
+2. Return timestamped speech segments using numeric seconds relative to the full video.
+3. Each segment must include startSec, endSec, and text.
+4. Do not use percentages, mm:ss strings, or prose outside the schema.
+5. Do not add words that are not spoken.`,
+  });
+
+  return result.segments.map((segment) => transcriptSegmentSchema.parse(segment));
 }

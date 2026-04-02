@@ -2,14 +2,22 @@
 
 PM Video Analyzer is now a small persisted video workspace instead of a one-shot demo.
 
-It stores videos, analysis runs, derived artifacts, screenshot memory, and reports so you can:
+It stores videos, analysis runs, derived artifacts, and reports so you can:
 
 - CRUD narrated walkthrough videos
 - boost audio before transcription
-- sample screenshots every X seconds
-- build reusable video memory from transcript plus screen state
+- use transcript as the global context for the whole walkthrough
+- inspect targeted video clips for local visual evidence
 - generate bug-ticket style reports and UI/domain object-model reports
 - still export selected clips client-side as MP4 + TXT
+
+## Recommended workflow
+
+Use local video files when you want the most reliable experience.
+
+- Local uploads are the primary supported path for transcript analysis, screenshots, notes, and clip export.
+- Public YouTube URLs are supported on a best-effort basis, but server-side downloads can fail depending on YouTube restrictions, cookies, and session freshness.
+- If you need stable frame extraction or screenshot generation, prefer uploading the video file directly.
 
 ## Stack
 
@@ -44,9 +52,13 @@ Open [http://localhost:3000](http://localhost:3000).
 | `GEMINI_MODEL` | No | Defaults to `gemini-3.1-pro-preview` |
 | `GEMINI_TRANSCRIPTION_MODEL` | No | Optional dedicated Gemini model for transcription, default `gemini-3-flash-preview` |
 | `MAX_UPLOAD_BYTES` | No | Max accepted upload size for multipart and temp processing |
-| `SCREENSHOT_INTERVAL_SEC` | No | Screenshot sampling cadence, default `8` |
-| `MAX_SCREENSHOTS` | No | Maximum screenshots persisted per run, default `16` |
 | `TRANSCRIPTION_CHUNK_SEC` | No | Chunk size for long extracted audio transcription, default `120` |
+| `CLIP_CONTEXT_PAD_SEC` | No | Extra seconds padded around each transcript-derived clip window, default `8` |
+| `MAX_CLIP_ANALYSES` | No | Maximum targeted clips sent for visual analysis, default `6` |
+| `YTDLP_COOKIES_FROM_BROWSER` | No | Optional browser source for `yt-dlp` cookies, e.g. `chrome` or `safari`, when YouTube Analyze downloads need auth |
+| `YTDLP_COOKIES_FILE` | No | Optional Netscape/Mozilla cookie file path passed to `yt-dlp --cookies` |
+| `YTDLP_USER_AGENT` | No | Optional user agent string passed to `yt-dlp` for cookie-backed requests |
+| `YTDLP_EXTRACTOR_ARGS` | No | Optional `yt-dlp --extractor-args` override for YouTube troubleshooting |
 | `BLOB_READ_WRITE_TOKEN` | Optional | Enables Blob-backed artifact storage |
 | `NEXT_PUBLIC_USE_BLOB_UPLOAD` | Optional | Set to `1` to expose direct Blob uploads in the UI |
 
@@ -57,7 +69,6 @@ For each video, the app persists:
 - the source video artifact
 - analysis runs and their status/stage
 - boosted audio artifact
-- screenshot artifacts
 - transcript segments with timestamps
 - flow steps
 - moments for frustration, bugs, and feature requests
@@ -67,7 +78,7 @@ For each video, the app persists:
 ## Main routes
 
 - `/`: dashboard for video CRUD and analysis runs
-- `/videos/[videoId]`: detail page with playback, transcript, screenshots, memory, and reports
+- `/videos/[videoId]`: detail page with playback, transcript, moments, and reports
 - `/api/videos`: create/list videos
 - `/api/videos/[videoId]/analyze`: run the persisted analysis pipeline
 - `/api/videos/[videoId]/reports/[reportType]`: download JSON or HTML reports
@@ -79,12 +90,27 @@ Each run does the following:
 
 1. Load the source video artifact from Blob or local storage.
 2. Extract boosted mono WAV audio with ffmpeg.
-3. Sample screenshots on a fixed cadence.
-4. Chunk the boosted audio and transcribe each chunk with Gemini.
-5. Understand each screenshot with Gemini.
-6. Synthesize flow steps and frustration/bug/feature moments.
-7. Build a reusable object/relationship model from transcript plus screenshots.
+3. Chunk the boosted audio and transcribe each chunk with Gemini.
+4. Use the full transcript as the global context to infer flow steps and frustration/bug/feature moments.
+5. Extract a small set of transcript-derived MP4 clips around the most important moments.
+6. Ask Gemini to inspect those targeted clips for local visual evidence.
+7. Build a reusable object/relationship model from transcript plus targeted clip findings.
 8. Persist reports for bugs, timeline, and object model.
+
+## Source types
+
+### Local files
+
+- Fully supported.
+- Best option for PM report mode and Analyze mode.
+- Supports boosted audio extraction, screenshot generation, and clip export.
+
+### YouTube URLs
+
+- Best-effort support only.
+- Gemini can analyze public YouTube URLs directly for transcript and video understanding.
+- Analyze mode may attempt to download the YouTube source server-side in order to extract real screenshots, but this can fail because of YouTube anti-bot rules, cookie requirements, or session expiry.
+- If YouTube download fails, use a local file instead of trying to force the URL path.
 
 ## Local-first notes
 
@@ -97,3 +123,4 @@ Each run does the following:
 - Large multipart uploads are still a poor fit for Vercel Route Handlers. Prefer Blob direct upload in production.
 - The current preprocessing and analysis flow runs inline inside the request. It works locally and is compatible with a future move to background jobs or workflow tooling.
 - Blob URLs should be treated as trusted only when they originate from your own store.
+- Server-side YouTube downloading is not a production-stable path at the moment; treat it as experimental.

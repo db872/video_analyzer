@@ -8,7 +8,7 @@ import { dirname, join } from "path";
 const execFileAsync = promisify(execFile);
 const require = createRequire(import.meta.url);
 
-function getFfmpegPath() {
+export function getFfmpegPath() {
   const modulePath = require.resolve("ffmpeg-static");
   return join(dirname(modulePath), "ffmpeg");
 }
@@ -166,6 +166,77 @@ export async function splitAudioIntoChunks(params: {
     totalChunks: chunks.length,
   });
   return chunks;
+}
+
+export async function extractVideoClip(params: {
+  videoPath: string;
+  outputDir: string;
+  startSec: number;
+  endSec: number;
+  filename: string;
+}) {
+  const outputPath = join(params.outputDir, params.filename);
+  const duration = Math.max(0.5, params.endSec - params.startSec);
+
+  console.log("[ffmpeg] extracting targeted clip", {
+    videoPath: params.videoPath,
+    startSec: params.startSec,
+    endSec: params.endSec,
+    outputPath,
+  });
+
+  await runFfmpeg([
+    "-y",
+    "-ss",
+    params.startSec.toFixed(3),
+    "-t",
+    duration.toFixed(3),
+    "-i",
+    params.videoPath,
+    "-c:v",
+    "libx264",
+    "-preset",
+    "ultrafast",
+    "-crf",
+    "30",
+    "-c:a",
+    "aac",
+    "-movflags",
+    "faststart",
+    outputPath,
+  ]);
+
+  return outputPath;
+}
+
+export async function extractVideoFrame(params: {
+  videoPath: string;
+  outputDir: string;
+  timestampSec: number;
+  filename: string;
+}) {
+  const outputPath = join(params.outputDir, params.filename);
+
+  console.log("[ffmpeg] extracting video frame", {
+    videoPath: params.videoPath,
+    timestampSec: params.timestampSec,
+    outputPath,
+  });
+
+  await runFfmpeg([
+    "-y",
+    "-ss",
+    Math.max(0, params.timestampSec).toFixed(3),
+    "-i",
+    params.videoPath,
+    "-frames:v",
+    "1",
+    "-q:v",
+    "2",
+    outputPath,
+  ]);
+
+  return outputPath;
 }
 
 export async function extractScreenshots(params: {
