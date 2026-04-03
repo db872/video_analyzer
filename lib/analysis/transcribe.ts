@@ -74,7 +74,7 @@ function normalizeTranscriptSegments(params: {
     .filter((segment) => segment.text.length > 0);
 }
 
-async function transcribeChunk(params: {
+export async function transcribeAudioChunk(params: {
   filePath: string;
   mimeType: string;
   clipStartSec: number;
@@ -161,10 +161,10 @@ export async function transcribeAudioFile(params: {
     chunkDurationSec: getTranscriptionChunkSeconds(),
   });
 
-  const transcript: TranscriptSegment[] = [];
+  const transcriptChunks: Array<{ chunkIndex: number; segments: TranscriptSegment[] }> = [];
 
   for (const chunk of chunks) {
-    const chunkSegments = await transcribeChunk({
+    const chunkSegments = await transcribeAudioChunk({
       filePath: chunk.path,
       mimeType: params.mimeType,
       clipStartSec: chunk.startSec,
@@ -173,19 +173,26 @@ export async function transcribeAudioFile(params: {
       totalChunks: chunks.length,
     });
 
-    transcript.push(...chunkSegments);
+    transcriptChunks.push({
+      chunkIndex: chunk.index,
+      segments: chunkSegments,
+    });
     console.log("[transcribe] completed chunk", {
       chunkIndex: chunk.index + 1,
       totalChunks: chunks.length,
       segmentCount: chunkSegments.length,
-      transcriptSegmentsSoFar: transcript.length,
+      transcriptSegmentsSoFar: transcriptChunks.reduce(
+        (count, current) => count + current.segments.length,
+        0,
+      ),
     });
   }
 
+  const transcript = mergeTranscriptChunks(transcriptChunks);
   console.log("[transcribe] transcription complete", {
     totalSegments: transcript.length,
   });
-  return transcript.map((segment) => transcriptSegmentSchema.parse(segment));
+  return transcript;
 }
 
 export async function transcribeVideoUrl(params: { videoUrl: string }) {
@@ -214,4 +221,17 @@ Requirements:
   });
 
   return result.segments.map((segment) => transcriptSegmentSchema.parse(segment));
+}
+
+export function mergeTranscriptChunks(
+  chunks: Array<{
+    chunkIndex: number;
+    segments: TranscriptSegment[];
+  }>,
+) {
+  return chunks
+    .slice()
+    .sort((left, right) => left.chunkIndex - right.chunkIndex)
+    .flatMap((chunk) => chunk.segments)
+    .map((segment) => transcriptSegmentSchema.parse(segment));
 }

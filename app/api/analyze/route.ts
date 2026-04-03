@@ -1,10 +1,11 @@
 import { guessVideoMime } from "@/lib/mime";
 import { databaseConfigured } from "@/lib/server/db";
+import { ensureAnalysisWorkerRunning } from "@/lib/server/analysis-worker";
 import {
   createVideoFromBlobReference,
   createVideoFromUpload,
   createVideoFromYouTubeUrl,
-  runAnalysisForVideo,
+  enqueueAnalysisForVideo,
 } from "@/lib/server/video-service";
 import { analysisModeSchema } from "@/lib/types";
 import { NextRequest, NextResponse } from "next/server";
@@ -24,6 +25,7 @@ export async function POST(req: NextRequest) {
   }
 
   try {
+    ensureAnalysisWorkerRunning();
     const contentType = req.headers.get("content-type") ?? "";
     let videoId: string;
     let mode: "pm_report" | "analyze" | undefined;
@@ -108,7 +110,7 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const video = await runAnalysisForVideo(videoId, { mode, prompt });
+    const video = await enqueueAnalysisForVideo(videoId, { mode, prompt });
     return NextResponse.json({ video });
   } catch (e) {
     const message = e instanceof Error ? e.message : "Analysis failed";

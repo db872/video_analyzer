@@ -5,7 +5,7 @@ import { getVideoSourceKind } from "@/lib/video-source";
 import { upload } from "@vercel/blob/client";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 
 type Props = {
   initialVideos: VideoListItem[];
@@ -37,7 +37,7 @@ export function VideoDashboard({
 
   const totalVideos = useMemo(() => videos.length, [videos]);
 
-  async function refreshVideos() {
+  const refreshVideos = useCallback(async () => {
     const response = await fetch("/api/videos");
     const data = (await response.json()) as { videos?: VideoListItem[]; error?: string };
     if (!response.ok) {
@@ -45,7 +45,23 @@ export function VideoDashboard({
     }
     setVideos(data.videos ?? []);
     router.refresh();
-  }
+  }, [router]);
+
+  useEffect(() => {
+    const hasActiveRuns = videos.some(
+      (video) =>
+        video.latestRun?.status === "queued" || video.latestRun?.status === "processing",
+    );
+    if (!hasActiveRuns) {
+      return;
+    }
+
+    const interval = window.setInterval(() => {
+      void refreshVideos().catch(() => {});
+    }, 3000);
+
+    return () => window.clearInterval(interval);
+  }, [refreshVideos, videos]);
 
   async function handleCreate() {
     setSaving(true);
@@ -336,6 +352,9 @@ export function VideoDashboard({
                       {video.latestRun ? (
                         <span className="rounded-full border border-[var(--border)] px-2 py-0.5 text-xs uppercase tracking-wide text-[var(--muted)]">
                           latest run: {video.latestRun.status} · {video.latestRun.mode}
+                          {video.latestRun.progress.totalJobs > 0
+                            ? ` · ${video.latestRun.progress.completedJobs}/${video.latestRun.progress.totalJobs} jobs`
+                            : ""}
                         </span>
                       ) : null}
                     </div>
@@ -354,6 +373,19 @@ export function VideoDashboard({
                     </div>
                     {video.latestRun?.error ? (
                       <p className="text-sm text-red-300">{video.latestRun.error}</p>
+                    ) : null}
+                    {video.latestRun?.status === "processing" ||
+                    video.latestRun?.status === "queued" ? (
+                      <p className="text-xs text-[var(--muted)]">
+                        {video.latestRun.stage}
+                        {video.latestRun.progress.transcriptionTotal > 0
+                          ? ` · transcribing ${video.latestRun.progress.transcriptionCompleted}/${video.latestRun.progress.transcriptionTotal}`
+                          : video.latestRun.progress.clipTotal > 0
+                            ? ` · clips ${video.latestRun.progress.clipCompleted}/${video.latestRun.progress.clipTotal}`
+                            : video.latestRun.progress.snapshotTotal > 0
+                              ? ` · snapshots ${video.latestRun.progress.snapshotCompleted}/${video.latestRun.progress.snapshotTotal}`
+                              : ""}
+                      </p>
                     ) : null}
                     <p className="text-xs text-[var(--muted)]">
                       Open the video detail page to run prompt-driven Analyze mode.

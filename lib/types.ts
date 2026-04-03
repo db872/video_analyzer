@@ -16,6 +16,29 @@ export const analysisRunStatusSchema = z.enum([
 
 export const analysisModeSchema = z.enum(["pm_report", "analyze"]);
 
+export const analysisJobStatusSchema = z.enum([
+  "queued",
+  "processing",
+  "completed",
+  "failed",
+  "cancelled",
+]);
+
+export const analysisJobTypeSchema = z.enum([
+  "prepare_media",
+  "transcribe_audio_chunk",
+  "transcribe_video_url",
+  "merge_transcript",
+  "analyze_moments",
+  "analyze_clip",
+  "merge_clip_findings",
+  "build_object_model",
+  "select_snapshots",
+  "analyze_snapshot",
+  "merge_snapshots",
+  "finalize_run",
+]);
+
 export const artifactKindSchema = z.enum([
   "source_video",
   "boosted_audio",
@@ -163,6 +186,37 @@ export const analysisRunSchema = z.object({
   createdAt: z.string(),
   updatedAt: z.string(),
   completedAt: z.string().nullable(),
+  progress: z.object({
+    totalJobs: z.number().int().nonnegative(),
+    queuedJobs: z.number().int().nonnegative(),
+    processingJobs: z.number().int().nonnegative(),
+    completedJobs: z.number().int().nonnegative(),
+    failedJobs: z.number().int().nonnegative(),
+    cancelledJobs: z.number().int().nonnegative(),
+    transcriptionTotal: z.number().int().nonnegative(),
+    transcriptionCompleted: z.number().int().nonnegative(),
+    clipTotal: z.number().int().nonnegative(),
+    clipCompleted: z.number().int().nonnegative(),
+    snapshotTotal: z.number().int().nonnegative(),
+    snapshotCompleted: z.number().int().nonnegative(),
+  }),
+});
+
+export const analysisJobSchema = z.object({
+  id: z.string(),
+  analysisRunId: z.string(),
+  jobType: analysisJobTypeSchema,
+  status: analysisJobStatusSchema,
+  payload: z.record(z.string(), z.unknown()),
+  result: z.record(z.string(), z.unknown()).nullable(),
+  error: z.string().nullable(),
+  attemptCount: z.number().int().nonnegative(),
+  priority: z.number().int(),
+  availableAt: z.string(),
+  startedAt: z.string().nullable(),
+  completedAt: z.string().nullable(),
+  createdAt: z.string(),
+  updatedAt: z.string(),
 });
 
 export const videoSchema = z.object({
@@ -202,6 +256,8 @@ export const videoDetailSchema = videoSchema.extend({
 export type VideoStatus = z.infer<typeof videoStatusSchema>;
 export type AnalysisRunStatus = z.infer<typeof analysisRunStatusSchema>;
 export type AnalysisMode = z.infer<typeof analysisModeSchema>;
+export type AnalysisJobStatus = z.infer<typeof analysisJobStatusSchema>;
+export type AnalysisJobType = z.infer<typeof analysisJobTypeSchema>;
 export type ArtifactKind = z.infer<typeof artifactKindSchema>;
 export type StorageBackend = z.infer<typeof storageBackendSchema>;
 export type MomentCategory = z.infer<typeof momentCategorySchema>;
@@ -220,6 +276,7 @@ export type TimelineReport = z.infer<typeof timelineReportSchema>;
 export type AnalysisResult = z.infer<typeof analysisResultSchema>;
 export type StoredArtifact = z.infer<typeof storedArtifactSchema>;
 export type AnalysisRun = z.infer<typeof analysisRunSchema>;
+export type AnalysisJob = z.infer<typeof analysisJobSchema>;
 export type Video = z.infer<typeof videoSchema>;
 export type VideoListItem = z.infer<typeof videoListItemSchema>;
 export type VideoDetail = z.infer<typeof videoDetailSchema>;

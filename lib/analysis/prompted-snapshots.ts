@@ -17,7 +17,7 @@ const candidateSchema = z.object({
   transcriptEvidence: z.array(z.string()).default([]),
 });
 
-type SnapshotCandidate = z.infer<typeof candidateSchema>;
+export type SnapshotCandidate = z.infer<typeof candidateSchema>;
 
 export type PromptedSnapshotResult = Omit<
   ScreenshotInsight,
@@ -29,6 +29,11 @@ export type PromptedSnapshotResult = Omit<
 export type PromptedSnapshotRun = {
   summary: string;
   snapshots: PromptedSnapshotResult[];
+};
+
+export type PromptedSnapshotSelection = {
+  summary: string;
+  snapshots: SnapshotCandidate[];
 };
 
 const selectionResponseSchema = {
@@ -91,10 +96,10 @@ function transcriptExcerptForRange(
     .slice(0, 10);
 }
 
-async function selectInterestingSnapshots(params: {
+export async function selectInterestingSnapshots(params: {
   transcript: TranscriptSegment[];
   userPrompt: string;
-}) {
+}): Promise<PromptedSnapshotSelection> {
   const result = await generateJsonFromText<{
     summary: string;
     snapshots: SnapshotCandidate[];
@@ -154,38 +159,15 @@ export async function analyzePromptedSnapshotsFromFile(params: {
   for (const [index, candidate] of selection.snapshots
     .slice(0, getMaxPromptedSnapshots())
     .entries()) {
-    const framePath = await extractVideoFrame({
-      videoPath: params.sourceVideoPath,
-      outputDir: params.workingDir,
-      timestampSec: candidate.timestampSec,
-      filename: `snapshot-${String(index).padStart(3, "0")}.jpg`,
-    });
-
-    const insight = await understandScreenshot({
-      filePath: framePath,
-      mimeType: "image/jpeg",
-      timestampSec: candidate.timestampSec,
-      focusPrompt: params.userPrompt,
-      contextLabel: candidate.title,
-      rationale: candidate.rationale,
-      transcriptExcerpt: transcriptExcerptForRange(
-        params.transcript,
-        Math.max(0, candidate.timestampSec - 5),
-        candidate.timestampSec + 5,
-      ),
-    });
-
     snapshots.push(
-      normalizeSnapshot(
-        {
-          timestampSec: insight.timestampSec,
-          pageLabel: insight.pageLabel ?? candidate.title,
-          caption: insight.caption,
-          rawNotes: mergeRawNotes(candidate.rationale, insight.rawNotes),
-          objects: insight.objects,
-        },
-        framePath,
-      ),
+      await analyzePromptedSnapshotFromFile({
+        sourceVideoPath: params.sourceVideoPath,
+        workingDir: params.workingDir,
+        transcript: params.transcript,
+        userPrompt: params.userPrompt,
+        candidate,
+        index,
+      }),
     );
   }
 
@@ -203,33 +185,15 @@ export async function analyzePromptedSnapshotsFromVideoUrl(params: {
   const selection = await selectInterestingSnapshots(params);
   const snapshots: PromptedSnapshotResult[] = [];
 
-  for (const candidate of selection.snapshots.slice(0, getMaxPromptedSnapshots())) {
-    const clip = await analyzeTargetClipFromVideoUrl({
-      videoUrl: params.videoUrl,
-      startSec: Math.max(0, candidate.timestampSec - 4),
-      endSec: candidate.timestampSec + 4,
-      transcriptExcerpt: transcriptExcerptForRange(
-        params.transcript,
-        Math.max(0, candidate.timestampSec - 5),
-        candidate.timestampSec + 5,
-      ),
-      contextLabel: candidate.title,
-    });
-
+  for (const [index, candidate] of selection.snapshots
+    .slice(0, getMaxPromptedSnapshots())
+    .entries()) {
     snapshots.push(
-      normalizeSnapshot({
-        timestampSec: candidate.timestampSec,
-        pageLabel: clip.title,
-        caption: clip.summary,
-        rawNotes: mergeRawNotes(candidate.rationale, clip.visualEvidence.join("\n")),
-        objects: Array.from(
-          new Set([...clip.visibleObjects, ...clip.objectHints]),
-        ).map((label) => ({
-          kind: "object",
-          label,
-          text: null,
-          confidence: 0.7,
-        })),
+      await analyzePromptedSnapshotFromVideoUrl({
+        videoUrl: params.videoUrl,
+        transcript: params.transcript,
+        candidate,
+        index,
       }),
     );
   }
@@ -238,4 +202,79 @@ export async function analyzePromptedSnapshotsFromVideoUrl(params: {
     summary: selection.summary,
     snapshots,
   } satisfies PromptedSnapshotRun;
+}
+
+export async function analyzePromptedSnapshotFromFile(params: {
+  sourceVideoPath: string;
+  workingDir: string;
+  transcript: TranscriptSegment[];
+  userPrompt: string;
+  candidate: SnapshotCandidate;
+  index: number;
+}) {
+  const framePath = await extractVideoFrame({
+    videoPath: params.sourceVideoPath,
+    outputDir: params.workingDir,
+    timestampSec: params.candidate.timestampSec,
+    filename: `snapshot-${String(params.index).padStart(3, "0")}.jpg`,
+  });
+
+  const insight = await understandScreenshot({
+    filePath: framePath,
+    mimeType: "image/jpeg",
+    timestampSec: params.candidate.timestampSec,
+    focusPrompt: params.userPrompt,
+    contextLabel: params.candidate.title,
+    rationale: params.candidate.rationale,
+    transcriptExcerpt: transcriptExcerptForRange(
+      params.transcript,
+      Math.max(0, params.candidate.timestampSec - 5),
+      params.candidate.timestampSec + 5,
+    ),
+  });
+
+  return normalizeSnapshot(
+    {
+      timestampSec: insight.timestampSec,
+      pageLabel: insight.pageLabel ?? params.candidate.title,
+      caption: insight.caption,
+      rawNotes: mergeRawNotes(params.candidate.rationale, insight.rawNotes),
+      objects: insight.objects,
+    },
+    framePath,
+  );
+}
+
+export async function analyzePromptedSnapshotFromVideoUrl(params: {
+  videoUrl: string;
+  transcript: TranscriptSegment[];
+  candidate: SnapshotCandidate;
+  index: number;
+}) {
+  const clip = await analyzeTargetClipFromVideoUrl({
+    videoUrl: params.videoUrl,
+    startSec: Math.max(0, params.candidate.timestampSec - 4),
+    endSec: params.candidate.timestampSec + 4,
+    transcriptExcerpt: transcriptExcerptForRange(
+      params.transcript,
+      Math.max(0, params.candidate.timestampSec - 5),
+      params.candidate.timestampSec + 5,
+    ),
+    contextLabel: params.candidate.title,
+  });
+
+  return normalizeSnapshot({
+    timestampSec: params.candidate.timestampSec,
+    pageLabel: clip.title,
+    caption: clip.summary,
+    rawNotes: mergeRawNotes(params.candidate.rationale, clip.visualEvidence.join("\n")),
+    objects: Array.from(new Set([...clip.visibleObjects, ...clip.objectHints])).map(
+      (label) => ({
+        kind: "object",
+        label,
+        text: null,
+        confidence: 0.7,
+      }),
+    ),
+  });
 }

@@ -1,5 +1,6 @@
 import { databaseConfigured } from "@/lib/server/db";
-import { runAnalysisForVideo } from "@/lib/server/video-service";
+import { ensureAnalysisWorkerRunning } from "@/lib/server/analysis-worker";
+import { enqueueAnalysisForVideo } from "@/lib/server/video-service";
 import { analysisModeSchema } from "@/lib/types";
 import { NextResponse } from "next/server";
 
@@ -18,6 +19,7 @@ export async function POST(
   }
 
   try {
+    ensureAnalysisWorkerRunning();
     let body: { mode?: string; prompt?: string } = {};
     const contentType = req.headers.get("content-type") ?? "";
     if (contentType.includes("application/json")) {
@@ -28,7 +30,7 @@ export async function POST(
     }
 
     const { videoId } = await context.params;
-    const video = await runAnalysisForVideo(videoId, {
+    const video = await enqueueAnalysisForVideo(videoId, {
       mode: body.mode ? analysisModeSchema.parse(body.mode) : undefined,
       prompt: typeof body.prompt === "string" ? body.prompt : undefined,
     });

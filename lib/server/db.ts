@@ -1,6 +1,9 @@
 import { randomUUID } from "crypto";
 import { neon } from "@neondatabase/serverless";
 import type {
+  AnalysisJob,
+  AnalysisJobStatus,
+  AnalysisJobType,
   AnalysisMode,
   AnalysisResult,
   AnalysisRun,
@@ -18,6 +21,8 @@ import type {
   VideoListItem,
   VideoStatus,
 } from "@/lib/types";
+
+type JsonRecord = Record<string, unknown>;
 
 type SqlClient = ReturnType<typeof neon>;
 
@@ -106,6 +111,39 @@ function mapRun(row: Record<string, unknown>, prefix = ""): AnalysisRun | null {
       row[`${prefix}run_completed_at`] == null
         ? null
         : toIso(row[`${prefix}run_completed_at`]),
+    progress: {
+      totalJobs: toNumber(row[`${prefix}run_total_jobs`]),
+      queuedJobs: toNumber(row[`${prefix}run_queued_jobs`]),
+      processingJobs: toNumber(row[`${prefix}run_processing_jobs`]),
+      completedJobs: toNumber(row[`${prefix}run_completed_jobs`]),
+      failedJobs: toNumber(row[`${prefix}run_failed_jobs`]),
+      cancelledJobs: toNumber(row[`${prefix}run_cancelled_jobs`]),
+      transcriptionTotal: toNumber(row[`${prefix}run_transcription_total`]),
+      transcriptionCompleted: toNumber(row[`${prefix}run_transcription_completed`]),
+      clipTotal: toNumber(row[`${prefix}run_clip_total`]),
+      clipCompleted: toNumber(row[`${prefix}run_clip_completed`]),
+      snapshotTotal: toNumber(row[`${prefix}run_snapshot_total`]),
+      snapshotCompleted: toNumber(row[`${prefix}run_snapshot_completed`]),
+    },
+  };
+}
+
+function mapJob(row: Record<string, unknown>): AnalysisJob {
+  return {
+    id: String(row.id),
+    analysisRunId: String(row.analysis_run_id),
+    jobType: String(row.job_type) as AnalysisJobType,
+    status: String(row.status) as AnalysisJobStatus,
+    payload: asJson<JsonRecord>(row.payload_json, {}),
+    result: row.result_json == null ? null : asJson<JsonRecord>(row.result_json, {}),
+    error: row.error == null ? null : String(row.error),
+    attemptCount: toNumber(row.attempt_count),
+    priority: toNumber(row.priority),
+    availableAt: toIso(row.available_at),
+    startedAt: row.started_at == null ? null : toIso(row.started_at),
+    completedAt: row.completed_at == null ? null : toIso(row.completed_at),
+    createdAt: toIso(row.created_at),
+    updatedAt: toIso(row.updated_at),
   };
 }
 
@@ -153,6 +191,44 @@ export async function ensureSchema() {
       await sql`
         ALTER TABLE analysis_runs
         ADD COLUMN IF NOT EXISTS prompt TEXT
+      `;
+
+      await sql`
+        CREATE TABLE IF NOT EXISTS analysis_jobs (
+          id TEXT PRIMARY KEY,
+          analysis_run_id TEXT NOT NULL REFERENCES analysis_runs(id) ON DELETE CASCADE,
+          job_type TEXT NOT NULL,
+          status TEXT NOT NULL,
+          payload_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+          result_json JSONB,
+          error TEXT,
+          attempt_count INTEGER NOT NULL DEFAULT 0,
+          priority INTEGER NOT NULL DEFAULT 0,
+          available_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          started_at TIMESTAMPTZ,
+          completed_at TIMESTAMPTZ,
+          created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )
+      `;
+
+      await sql`
+        CREATE TABLE IF NOT EXISTS analysis_job_dependencies (
+          job_id TEXT NOT NULL REFERENCES analysis_jobs(id) ON DELETE CASCADE,
+          depends_on_job_id TEXT NOT NULL REFERENCES analysis_jobs(id) ON DELETE CASCADE,
+          PRIMARY KEY (job_id, depends_on_job_id)
+        )
+      `;
+
+      await sql`
+        CREATE TABLE IF NOT EXISTS analysis_run_outputs (
+          analysis_run_id TEXT NOT NULL REFERENCES analysis_runs(id) ON DELETE CASCADE,
+          output_key TEXT NOT NULL,
+          payload_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+          created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          PRIMARY KEY (analysis_run_id, output_key)
+        )
       `;
 
       await sql`
@@ -271,6 +347,31 @@ export async function ensureSchema() {
       await sql`
         CREATE INDEX IF NOT EXISTS analysis_runs_video_idx
         ON analysis_runs (video_id, created_at DESC)
+      `;
+
+      await sql`
+        CREATE INDEX IF NOT EXISTS analysis_jobs_run_idx
+        ON analysis_jobs (analysis_run_id, created_at ASC)
+      `;
+
+      await sql`
+        CREATE INDEX IF NOT EXISTS analysis_jobs_status_idx
+        ON analysis_jobs (status, available_at, priority DESC, created_at ASC)
+      `;
+
+      await sql`
+        CREATE INDEX IF NOT EXISTS analysis_jobs_type_status_idx
+        ON analysis_jobs (job_type, status, available_at, created_at ASC)
+      `;
+
+      await sql`
+        CREATE INDEX IF NOT EXISTS analysis_job_dependencies_dep_idx
+        ON analysis_job_dependencies (depends_on_job_id)
+      `;
+
+      await sql`
+        CREATE INDEX IF NOT EXISTS analysis_run_outputs_run_idx
+        ON analysis_run_outputs (analysis_run_id, output_key)
       `;
 
       await sql`
@@ -439,6 +540,68 @@ export async function listArtifactsForVideo(videoId: string) {
   return rows.map((row) => mapArtifact(row));
 }
 
+export async function getAnalysisRun(runId: string) {
+  await ensureSchema();
+  const sql = getSql();
+  const rows = asRows(await sql`
+    SELECT
+      r.id AS run_id,
+      r.video_id AS run_video_id,
+      r.status AS run_status,
+      r.mode AS run_mode,
+      r.prompt AS run_prompt,
+      r.stage AS run_stage,
+      r.error AS run_error,
+      r.config_version AS run_config_version,
+      r.created_at AS run_created_at,
+      r.updated_at AS run_updated_at,
+      r.completed_at AS run_completed_at,
+      COALESCE(stats.total_jobs, 0) AS run_total_jobs,
+      COALESCE(stats.queued_jobs, 0) AS run_queued_jobs,
+      COALESCE(stats.processing_jobs, 0) AS run_processing_jobs,
+      COALESCE(stats.completed_jobs, 0) AS run_completed_jobs,
+      COALESCE(stats.failed_jobs, 0) AS run_failed_jobs,
+      COALESCE(stats.cancelled_jobs, 0) AS run_cancelled_jobs,
+      COALESCE(stats.transcription_total, 0) AS run_transcription_total,
+      COALESCE(stats.transcription_completed, 0) AS run_transcription_completed,
+      COALESCE(stats.clip_total, 0) AS run_clip_total,
+      COALESCE(stats.clip_completed, 0) AS run_clip_completed,
+      COALESCE(stats.snapshot_total, 0) AS run_snapshot_total,
+      COALESCE(stats.snapshot_completed, 0) AS run_snapshot_completed
+    FROM analysis_runs r
+    LEFT JOIN LATERAL (
+      SELECT
+        COUNT(*) AS total_jobs,
+        COUNT(*) FILTER (WHERE status = 'queued') AS queued_jobs,
+        COUNT(*) FILTER (WHERE status = 'processing') AS processing_jobs,
+        COUNT(*) FILTER (WHERE status = 'completed') AS completed_jobs,
+        COUNT(*) FILTER (WHERE status = 'failed') AS failed_jobs,
+        COUNT(*) FILTER (WHERE status = 'cancelled') AS cancelled_jobs,
+        COUNT(*) FILTER (WHERE job_type IN ('transcribe_audio_chunk', 'transcribe_video_url'))
+          AS transcription_total,
+        COUNT(*) FILTER (
+          WHERE job_type IN ('transcribe_audio_chunk', 'transcribe_video_url')
+            AND status = 'completed'
+        ) AS transcription_completed,
+        COUNT(*) FILTER (WHERE job_type = 'analyze_clip') AS clip_total,
+        COUNT(*) FILTER (
+          WHERE job_type = 'analyze_clip'
+            AND status = 'completed'
+        ) AS clip_completed,
+        COUNT(*) FILTER (WHERE job_type = 'analyze_snapshot') AS snapshot_total,
+        COUNT(*) FILTER (
+          WHERE job_type = 'analyze_snapshot'
+            AND status = 'completed'
+        ) AS snapshot_completed
+      FROM analysis_jobs
+      WHERE analysis_run_id = r.id
+    ) stats ON TRUE
+    WHERE r.id = ${runId}
+  `);
+  if (rows.length === 0) return null;
+  return mapRun(rows[0]);
+}
+
 export async function deleteVideo(videoId: string) {
   await ensureSchema();
   const sql = getSql();
@@ -459,7 +622,7 @@ export async function createAnalysisRun(params: {
     VALUES (
       ${id},
       ${params.videoId},
-      'processing',
+      'queued',
       ${params.mode ?? "pm_report"},
       ${params.prompt ?? null},
       'queued',
@@ -492,6 +655,258 @@ export async function updateAnalysisRun(
         ELSE completed_at
       END
     WHERE id = ${runId}
+  `;
+}
+
+export async function createAnalysisJob(params: {
+  analysisRunId: string;
+  jobType: AnalysisJobType;
+  payload?: JsonRecord;
+  priority?: number;
+  availableAt?: Date | string;
+  dependsOnJobIds?: string[];
+}) {
+  await ensureSchema();
+  const sql = getSql();
+  const id = randomUUID();
+
+  await sql`
+    INSERT INTO analysis_jobs (
+      id,
+      analysis_run_id,
+      job_type,
+      status,
+      payload_json,
+      priority,
+      available_at
+    )
+    VALUES (
+      ${id},
+      ${params.analysisRunId},
+      ${params.jobType},
+      'queued',
+      ${JSON.stringify(params.payload ?? {})}::jsonb,
+      ${params.priority ?? 0},
+      ${params.availableAt ?? new Date().toISOString()}
+    )
+  `;
+
+  for (const dependencyId of params.dependsOnJobIds ?? []) {
+    await sql`
+      INSERT INTO analysis_job_dependencies (job_id, depends_on_job_id)
+      VALUES (${id}, ${dependencyId})
+      ON CONFLICT DO NOTHING
+    `;
+  }
+
+  return id;
+}
+
+export async function claimNextAnalysisJobOfType(jobType: AnalysisJobType) {
+  await ensureSchema();
+  const sql = getSql();
+  const rows = asRows(await sql`
+    WITH next_job AS (
+      SELECT aj.id
+      FROM analysis_jobs aj
+      WHERE aj.job_type = ${jobType}
+        AND aj.status = 'queued'
+        AND aj.available_at <= NOW()
+        AND NOT EXISTS (
+          SELECT 1
+          FROM analysis_job_dependencies ajd
+          JOIN analysis_jobs dep
+            ON dep.id = ajd.depends_on_job_id
+          WHERE ajd.job_id = aj.id
+            AND dep.status <> 'completed'
+        )
+      ORDER BY aj.priority DESC, aj.created_at ASC
+      LIMIT 1
+      FOR UPDATE SKIP LOCKED
+    )
+    UPDATE analysis_jobs aj
+    SET
+      status = 'processing',
+      started_at = NOW(),
+      updated_at = NOW(),
+      attempt_count = attempt_count + 1,
+      error = NULL
+    FROM next_job
+    WHERE aj.id = next_job.id
+    RETURNING aj.*
+  `);
+
+  if (rows.length === 0) return null;
+  return mapJob(rows[0]);
+}
+
+export async function completeAnalysisJob(
+  jobId: string,
+  result?: JsonRecord | null,
+) {
+  await ensureSchema();
+  const sql = getSql();
+  await sql`
+    UPDATE analysis_jobs
+    SET
+      status = 'completed',
+      result_json = ${result == null ? null : JSON.stringify(result)}::jsonb,
+      error = NULL,
+      completed_at = NOW(),
+      updated_at = NOW()
+    WHERE id = ${jobId}
+  `;
+}
+
+export async function failAnalysisJob(
+  jobId: string,
+  params: {
+    error: string;
+    retryable?: boolean;
+    retryDelaySec?: number;
+    result?: JsonRecord | null;
+  },
+) {
+  await ensureSchema();
+  const sql = getSql();
+
+  if (params.retryable) {
+    await sql`
+      UPDATE analysis_jobs
+      SET
+        status = 'queued',
+        error = ${params.error},
+        result_json = ${params.result == null ? null : JSON.stringify(params.result)}::jsonb,
+        available_at = NOW() + (${params.retryDelaySec ?? 15} * INTERVAL '1 second'),
+        started_at = NULL,
+        updated_at = NOW()
+      WHERE id = ${jobId}
+    `;
+    return;
+  }
+
+  await sql`
+    UPDATE analysis_jobs
+    SET
+      status = 'failed',
+      error = ${params.error},
+      result_json = ${params.result == null ? null : JSON.stringify(params.result)}::jsonb,
+      completed_at = NOW(),
+      updated_at = NOW()
+    WHERE id = ${jobId}
+  `;
+}
+
+export async function cancelQueuedAnalysisJobsForRun(
+  runId: string,
+  options?: { exceptJobId?: string },
+) {
+  await ensureSchema();
+  const sql = getSql();
+  await sql`
+    UPDATE analysis_jobs
+    SET
+      status = 'cancelled',
+      completed_at = NOW(),
+      updated_at = NOW()
+    WHERE analysis_run_id = ${runId}
+      AND status = 'queued'
+      AND (${options?.exceptJobId ?? null} IS NULL OR id <> ${options?.exceptJobId ?? null})
+  `;
+}
+
+export async function getAnalysisJob(jobId: string) {
+  await ensureSchema();
+  const sql = getSql();
+  const rows = asRows(await sql`
+    SELECT *
+    FROM analysis_jobs
+    WHERE id = ${jobId}
+  `);
+  if (rows.length === 0) return null;
+  return mapJob(rows[0]);
+}
+
+export async function listAnalysisJobsForRun(runId: string) {
+  await ensureSchema();
+  const sql = getSql();
+  const rows = asRows(await sql`
+    SELECT *
+    FROM analysis_jobs
+    WHERE analysis_run_id = ${runId}
+    ORDER BY created_at ASC
+  `);
+  return rows.map(mapJob);
+}
+
+export async function putAnalysisRunOutput(
+  runId: string,
+  outputKey: string,
+  payload: JsonRecord,
+) {
+  await ensureSchema();
+  const sql = getSql();
+  await sql`
+    INSERT INTO analysis_run_outputs (
+      analysis_run_id,
+      output_key,
+      payload_json
+    )
+    VALUES (
+      ${runId},
+      ${outputKey},
+      ${JSON.stringify(payload)}::jsonb
+    )
+    ON CONFLICT (analysis_run_id, output_key)
+    DO UPDATE SET
+      payload_json = EXCLUDED.payload_json,
+      updated_at = NOW()
+  `;
+}
+
+export async function getAnalysisRunOutput<T extends JsonRecord>(
+  runId: string,
+  outputKey: string,
+) {
+  await ensureSchema();
+  const sql = getSql();
+  const rows = asRows(await sql`
+    SELECT payload_json
+    FROM analysis_run_outputs
+    WHERE analysis_run_id = ${runId}
+      AND output_key = ${outputKey}
+  `);
+  if (rows.length === 0) return null;
+  return asJson<T>(rows[0].payload_json, {} as T);
+}
+
+export async function listAnalysisRunOutputsByPrefix<T extends JsonRecord>(
+  runId: string,
+  prefix: string,
+) {
+  await ensureSchema();
+  const sql = getSql();
+  const rows = asRows(await sql`
+    SELECT output_key, payload_json
+    FROM analysis_run_outputs
+    WHERE analysis_run_id = ${runId}
+      AND output_key LIKE ${`${prefix}%`}
+    ORDER BY output_key ASC
+  `);
+
+  return rows.map((row) => ({
+    outputKey: String(row.output_key),
+    payload: asJson<T>(row.payload_json, {} as T),
+  }));
+}
+
+export async function deleteAnalysisRunOutputPrefix(runId: string, prefix: string) {
+  await ensureSchema();
+  const sql = getSql();
+  await sql`
+    DELETE FROM analysis_run_outputs
+    WHERE analysis_run_id = ${runId}
+      AND output_key LIKE ${`${prefix}%`}
   `;
 }
 
@@ -757,6 +1172,18 @@ export async function listVideos() {
       r.created_at AS run_created_at,
       r.updated_at AS run_updated_at,
       r.completed_at AS run_completed_at,
+      COALESCE(rs.total_jobs, 0) AS run_total_jobs,
+      COALESCE(rs.queued_jobs, 0) AS run_queued_jobs,
+      COALESCE(rs.processing_jobs, 0) AS run_processing_jobs,
+      COALESCE(rs.completed_jobs, 0) AS run_completed_jobs,
+      COALESCE(rs.failed_jobs, 0) AS run_failed_jobs,
+      COALESCE(rs.cancelled_jobs, 0) AS run_cancelled_jobs,
+      COALESCE(rs.transcription_total, 0) AS run_transcription_total,
+      COALESCE(rs.transcription_completed, 0) AS run_transcription_completed,
+      COALESCE(rs.clip_total, 0) AS run_clip_total,
+      COALESCE(rs.clip_completed, 0) AS run_clip_completed,
+      COALESCE(rs.snapshot_total, 0) AS run_snapshot_total,
+      COALESCE(rs.snapshot_completed, 0) AS run_snapshot_completed,
       (SELECT COUNT(*) FROM transcript_segments ts WHERE ts.analysis_run_id = r.id) AS transcript_count,
       (SELECT COUNT(*) FROM moments m WHERE m.analysis_run_id = r.id) AS moment_count,
       (SELECT COUNT(*) FROM screenshot_frames sf WHERE sf.analysis_run_id = r.id) AS screenshot_count,
@@ -770,6 +1197,33 @@ export async function listVideos() {
       ORDER BY created_at DESC
       LIMIT 1
     ) r ON TRUE
+    LEFT JOIN LATERAL (
+      SELECT
+        COUNT(*) AS total_jobs,
+        COUNT(*) FILTER (WHERE status = 'queued') AS queued_jobs,
+        COUNT(*) FILTER (WHERE status = 'processing') AS processing_jobs,
+        COUNT(*) FILTER (WHERE status = 'completed') AS completed_jobs,
+        COUNT(*) FILTER (WHERE status = 'failed') AS failed_jobs,
+        COUNT(*) FILTER (WHERE status = 'cancelled') AS cancelled_jobs,
+        COUNT(*) FILTER (WHERE job_type IN ('transcribe_audio_chunk', 'transcribe_video_url'))
+          AS transcription_total,
+        COUNT(*) FILTER (
+          WHERE job_type IN ('transcribe_audio_chunk', 'transcribe_video_url')
+            AND status = 'completed'
+        ) AS transcription_completed,
+        COUNT(*) FILTER (WHERE job_type = 'analyze_clip') AS clip_total,
+        COUNT(*) FILTER (
+          WHERE job_type = 'analyze_clip'
+            AND status = 'completed'
+        ) AS clip_completed,
+        COUNT(*) FILTER (WHERE job_type = 'analyze_snapshot') AS snapshot_total,
+        COUNT(*) FILTER (
+          WHERE job_type = 'analyze_snapshot'
+            AND status = 'completed'
+        ) AS snapshot_completed
+      FROM analysis_jobs
+      WHERE analysis_run_id = r.id
+    ) rs ON TRUE
     ORDER BY v.created_at DESC
   `);
 
@@ -824,7 +1278,19 @@ export async function getVideoDetail(videoId: string) {
       r.config_version AS run_config_version,
       r.created_at AS run_created_at,
       r.updated_at AS run_updated_at,
-      r.completed_at AS run_completed_at
+      r.completed_at AS run_completed_at,
+      COALESCE(rs.total_jobs, 0) AS run_total_jobs,
+      COALESCE(rs.queued_jobs, 0) AS run_queued_jobs,
+      COALESCE(rs.processing_jobs, 0) AS run_processing_jobs,
+      COALESCE(rs.completed_jobs, 0) AS run_completed_jobs,
+      COALESCE(rs.failed_jobs, 0) AS run_failed_jobs,
+      COALESCE(rs.cancelled_jobs, 0) AS run_cancelled_jobs,
+      COALESCE(rs.transcription_total, 0) AS run_transcription_total,
+      COALESCE(rs.transcription_completed, 0) AS run_transcription_completed,
+      COALESCE(rs.clip_total, 0) AS run_clip_total,
+      COALESCE(rs.clip_completed, 0) AS run_clip_completed,
+      COALESCE(rs.snapshot_total, 0) AS run_snapshot_total,
+      COALESCE(rs.snapshot_completed, 0) AS run_snapshot_completed
     FROM videos v
     JOIN artifacts a ON a.id = v.source_artifact_id
     LEFT JOIN LATERAL (
@@ -834,6 +1300,33 @@ export async function getVideoDetail(videoId: string) {
       ORDER BY created_at DESC
       LIMIT 1
     ) r ON TRUE
+    LEFT JOIN LATERAL (
+      SELECT
+        COUNT(*) AS total_jobs,
+        COUNT(*) FILTER (WHERE status = 'queued') AS queued_jobs,
+        COUNT(*) FILTER (WHERE status = 'processing') AS processing_jobs,
+        COUNT(*) FILTER (WHERE status = 'completed') AS completed_jobs,
+        COUNT(*) FILTER (WHERE status = 'failed') AS failed_jobs,
+        COUNT(*) FILTER (WHERE status = 'cancelled') AS cancelled_jobs,
+        COUNT(*) FILTER (WHERE job_type IN ('transcribe_audio_chunk', 'transcribe_video_url'))
+          AS transcription_total,
+        COUNT(*) FILTER (
+          WHERE job_type IN ('transcribe_audio_chunk', 'transcribe_video_url')
+            AND status = 'completed'
+        ) AS transcription_completed,
+        COUNT(*) FILTER (WHERE job_type = 'analyze_clip') AS clip_total,
+        COUNT(*) FILTER (
+          WHERE job_type = 'analyze_clip'
+            AND status = 'completed'
+        ) AS clip_completed,
+        COUNT(*) FILTER (WHERE job_type = 'analyze_snapshot') AS snapshot_total,
+        COUNT(*) FILTER (
+          WHERE job_type = 'analyze_snapshot'
+            AND status = 'completed'
+        ) AS snapshot_completed
+      FROM analysis_jobs
+      WHERE analysis_run_id = r.id
+    ) rs ON TRUE
     WHERE v.id = ${videoId}
   `);
 

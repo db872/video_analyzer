@@ -1,16 +1,31 @@
 import { execFile } from "child_process";
+import { existsSync } from "fs";
 import { mkdtemp, readdir } from "fs/promises";
 import { createRequire } from "module";
 import { promisify } from "util";
 import { tmpdir } from "os";
-import { dirname, join } from "path";
+import { join } from "path";
 
 const execFileAsync = promisify(execFile);
 const require = createRequire(import.meta.url);
 
 export function getFfmpegPath() {
-  const modulePath = require.resolve("ffmpeg-static");
-  return join(dirname(modulePath), "ffmpeg");
+  const bundledBinaryPath = join(
+    process.cwd(),
+    "node_modules",
+    "ffmpeg-static",
+    process.platform === "win32" ? "ffmpeg.exe" : "ffmpeg",
+  );
+
+  if (existsSync(bundledBinaryPath)) {
+    return bundledBinaryPath;
+  }
+
+  const ffmpegPath = require("ffmpeg-static");
+  if (typeof ffmpegPath !== "string" || ffmpegPath.length === 0) {
+    throw new Error("ffmpeg-static did not provide a valid binary path.");
+  }
+  return ffmpegPath;
 }
 
 async function runFfmpeg(args: string[]) {

@@ -1,4 +1,5 @@
 import { databaseConfigured } from "@/lib/server/db";
+import { ensureAnalysisWorkerRunning } from "@/lib/server/analysis-worker";
 import {
   createVideoFromBlobReference,
   createVideoFromUpload,
@@ -15,6 +16,7 @@ export async function GET() {
     return NextResponse.json({ videos: [] });
   }
 
+  ensureAnalysisWorkerRunning();
   const videos = await listVideos();
   return NextResponse.json({ videos });
 }

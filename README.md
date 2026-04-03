@@ -11,6 +11,10 @@ It stores videos, analysis runs, derived artifacts, and reports so you can:
 - generate bug-ticket style reports and UI/domain object-model reports
 - still export selected clips client-side as MP4 + TXT
 
+## Architecture docs
+
+See [`docs/architecture.md`](docs/architecture.md) for the full system design, queue model, persistence layout, and pipeline step breakdown.
+
 ## Recommended workflow
 
 Use local video files when you want the most reliable experience.
@@ -43,6 +47,8 @@ npm run dev
 
 Open [http://localhost:3000](http://localhost:3000).
 
+`npm run dev` uses the standard Next.js development server with automatic rebuilding and Fast Refresh on save. If you want to try Turbopack locally, use `npm run dev:turbo`.
+
 ## Environment variables
 
 | Variable | Required | Description |
@@ -55,12 +61,17 @@ Open [http://localhost:3000](http://localhost:3000).
 | `TRANSCRIPTION_CHUNK_SEC` | No | Chunk size for long extracted audio transcription, default `120` |
 | `CLIP_CONTEXT_PAD_SEC` | No | Extra seconds padded around each transcript-derived clip window, default `8` |
 | `MAX_CLIP_ANALYSES` | No | Maximum targeted clips sent for visual analysis, default `6` |
+| `MAX_PROMPTED_SNAPSHOTS` | No | Maximum prompted snapshots selected for analyze mode, default `6` |
 | `YTDLP_COOKIES_FROM_BROWSER` | No | Optional browser source for `yt-dlp` cookies, e.g. `chrome` or `safari`, when YouTube Analyze downloads need auth |
 | `YTDLP_COOKIES_FILE` | No | Optional Netscape/Mozilla cookie file path passed to `yt-dlp --cookies` |
 | `YTDLP_USER_AGENT` | No | Optional user agent string passed to `yt-dlp` for cookie-backed requests |
 | `YTDLP_EXTRACTOR_ARGS` | No | Optional `yt-dlp --extractor-args` override for YouTube troubleshooting |
 | `BLOB_READ_WRITE_TOKEN` | Optional | Enables Blob-backed artifact storage |
 | `NEXT_PUBLIC_USE_BLOB_UPLOAD` | Optional | Set to `1` to expose direct Blob uploads in the UI |
+| `ANALYSIS_WORKER_CONCURRENCY` | No | Total in-process worker concurrency, default `4` |
+| `ANALYSIS_TRANSCRIBE_CONCURRENCY` | No | Max concurrent transcription jobs, default `3` |
+| `ANALYSIS_CLIP_CONCURRENCY` | No | Max concurrent clip-analysis jobs, default `2` |
+| `ANALYSIS_SNAPSHOT_CONCURRENCY` | No | Max concurrent snapshot-analysis jobs, default `3` |
 
 ## What gets stored
 
@@ -74,6 +85,7 @@ For each video, the app persists:
 - moments for frustration, bugs, and feature requests
 - inferred entities and relationships
 - generated reports in JSON plus HTML
+- analysis jobs, dependencies, and staged intermediate outputs for queued runs
 
 ## Main routes
 
@@ -86,16 +98,19 @@ For each video, the app persists:
 
 ## Analysis pipeline
 
-Each run does the following:
+Analysis runs are now queue-backed and processed by an in-process worker. The analyze API enqueues work, returns immediately, and the UI polls progress from persisted run/job state.
 
-1. Load the source video artifact from Blob or local storage.
-2. Extract boosted mono WAV audio with ffmpeg.
-3. Chunk the boosted audio and transcribe each chunk with Gemini.
-4. Use the full transcript as the global context to infer flow steps and frustration/bug/feature moments.
-5. Extract a small set of transcript-derived MP4 clips around the most important moments.
-6. Ask Gemini to inspect those targeted clips for local visual evidence.
-7. Build a reusable object/relationship model from transcript plus targeted clip findings.
-8. Persist reports for bugs, timeline, and object model.
+High-level flow:
+
+1. Enqueue an `analysis_run` plus root `prepare_media` job.
+2. Materialize the source video when needed and extract boosted mono WAV audio with ffmpeg.
+3. Fan out transcription jobs per audio chunk, then merge transcript output in order.
+4. Branch by mode:
+5. `pm_report`: infer flow + moments, fan out targeted clip jobs, merge clip findings, build object model, generate reports.
+6. `analyze`: select prompted snapshots, fan out snapshot jobs, merge notes/snapshots.
+7. Persist final outputs into the read-optimized domain tables used by the UI.
+
+Detailed step-by-step architecture lives in [`docs/architecture.md`](docs/architecture.md).
 
 ## Source types
 
@@ -121,6 +136,6 @@ Each run does the following:
 ## Vercel notes
 
 - Large multipart uploads are still a poor fit for Vercel Route Handlers. Prefer Blob direct upload in production.
-- The current preprocessing and analysis flow runs inline inside the request. It works locally and is compatible with a future move to background jobs or workflow tooling.
+- The current preprocessing and analysis flow is queue-backed, but the worker still runs in-process inside the app server.
 - Blob URLs should be treated as trusted only when they originate from your own store.
 - Server-side YouTube downloading is not a production-stable path at the moment; treat it as experimental.

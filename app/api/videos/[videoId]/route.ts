@@ -1,4 +1,5 @@
 import { databaseConfigured } from "@/lib/server/db";
+import { ensureAnalysisWorkerRunning } from "@/lib/server/analysis-worker";
 import {
   deleteVideoWithArtifacts,
   getVideoDetail,
@@ -18,6 +19,7 @@ export async function GET(
     );
   }
 
+  ensureAnalysisWorkerRunning();
   const { videoId } = await context.params;
   const detail = await getVideoDetail(videoId);
   if (!detail) {

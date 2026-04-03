@@ -211,7 +211,7 @@ export function VideoDetailView({ initialVideo }: { initialVideo: VideoDetail })
     void current.play().catch(() => {});
   }
 
-  async function refreshVideo() {
+  const refreshVideo = useCallback(async () => {
     const response = await fetch(`/api/videos/${video.id}`);
     const data = (await response.json()) as { video?: VideoDetail; error?: string };
     if (!response.ok || !data.video) {
@@ -221,7 +221,22 @@ export function VideoDetailView({ initialVideo }: { initialVideo: VideoDetail })
     setAnalysisMode(data.video.analysis?.mode ?? "pm_report");
     setAnalysisPrompt(data.video.analysis?.prompt ?? "");
     router.refresh();
-  }
+  }, [router, video.id]);
+
+  useEffect(() => {
+    if (
+      video.analysis?.status !== "queued" &&
+      video.analysis?.status !== "processing"
+    ) {
+      return;
+    }
+
+    const interval = window.setInterval(() => {
+      void refreshVideo().catch(() => {});
+    }, 3000);
+
+    return () => window.clearInterval(interval);
+  }, [refreshVideo, video.analysis?.status]);
 
   async function handleAnalyze() {
     setLoading(true);
@@ -349,6 +364,24 @@ export function VideoDetailView({ initialVideo }: { initialVideo: VideoDetail })
                 ? ` · latest run ${video.analysis.status} (${video.analysis.mode})`
                 : " · no runs yet"}
             </p>
+            {video.analysis?.progress.totalJobs ? (
+              <p className="mt-2 text-xs text-[var(--muted)]">
+                Jobs: {video.analysis.progress.completedJobs}/
+                {video.analysis.progress.totalJobs} complete
+                {video.analysis.progress.transcriptionTotal > 0
+                  ? ` · transcribing ${video.analysis.progress.transcriptionCompleted}/${video.analysis.progress.transcriptionTotal}`
+                  : ""}
+                {video.analysis.progress.clipTotal > 0
+                  ? ` · clips ${video.analysis.progress.clipCompleted}/${video.analysis.progress.clipTotal}`
+                  : ""}
+                {video.analysis.progress.snapshotTotal > 0
+                  ? ` · snapshots ${video.analysis.progress.snapshotCompleted}/${video.analysis.progress.snapshotTotal}`
+                  : ""}
+              </p>
+            ) : null}
+            {video.analysis?.status === "queued" || video.analysis?.status === "processing" ? (
+              <p className="mt-1 text-xs text-[var(--muted)]">{video.analysis.stage}</p>
+            ) : null}
           </div>
           <div className="flex flex-wrap gap-2">
             <button
@@ -470,7 +503,7 @@ export function VideoDetailView({ initialVideo }: { initialVideo: VideoDetail })
                 Run analysis to generate the boosted-audio transcript.
               </p>
             ) : (
-              <ul className="mt-4 max-h-[32rem] divide-y divide-[var(--border)] overflow-y-auto rounded-xl border border-[var(--border)]">
+              <ul className="mt-4 max-h-[32rem] divide-y divide-[var(--border)] overflow-y-auto rounded-xl border border-[var(--border)] xl:max-h-[calc(100dvh-24rem)]">
                 {video.transcript.map((segment, index) => (
                   <li key={`${segment.startSec}-${segment.endSec}-${index}`}>
                     <button
@@ -507,11 +540,11 @@ export function VideoDetailView({ initialVideo }: { initialVideo: VideoDetail })
           </div>
         </section>
 
-        <section className="space-y-4">
+        <section className="space-y-4 xl:sticky xl:top-8 xl:self-start">
           {video.analysis?.mode === "analyze" ? (
             <NotesPanel screenshots={video.screenshots} onSeek={seek} />
           ) : (
-            <div className="rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-4">
+            <div className="rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-4 xl:flex xl:max-h-[calc(100dvh-10rem)] xl:min-h-0 xl:flex-col">
               <div className="flex flex-wrap items-center gap-2">
                 <h2 className="text-lg font-medium">Moments</h2>
                 {(["all", "frustration", "bug", "feature_request"] as const).map(
@@ -531,7 +564,7 @@ export function VideoDetailView({ initialVideo }: { initialVideo: VideoDetail })
                   ),
                 )}
               </div>
-              <div className="mt-4 space-y-3">
+              <div className="mt-4 space-y-3 xl:min-h-0 xl:overflow-y-auto xl:pr-1">
                 {filteredMoments.length === 0 ? (
                   <p className="text-sm text-[var(--muted)]">No moments yet.</p>
                 ) : (
@@ -657,12 +690,12 @@ function NotesPanel({
   onSeek: (sec: number) => void;
 }) {
   return (
-    <div className="rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-4">
+    <div className="rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-4 xl:flex xl:max-h-[calc(100dvh-10rem)] xl:min-h-0 xl:flex-col">
       <div className="flex items-center justify-between gap-2">
         <h2 className="text-lg font-medium">Notes & snapshots</h2>
         <p className="text-xs text-[var(--muted)]">{screenshots.length} saved points</p>
       </div>
-      <div className="mt-4 space-y-4">
+      <div className="mt-4 space-y-4 xl:min-h-0 xl:overflow-y-auto xl:pr-1">
         {screenshots.length === 0 ? (
           <p className="text-sm text-[var(--muted)]">No notes or snapshots yet.</p>
         ) : (
